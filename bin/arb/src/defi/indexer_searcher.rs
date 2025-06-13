@@ -2,30 +2,36 @@ use dex_indexer::{
     types::{Pool, Protocol},
     DexIndexer,
 };
-use eyre::{bail, ensure, OptionExt, Result};
+use eyre::{ensure, eyre, OptionExt, Result}; // Added eyre for error construction
 use object_pool::ObjectPool;
 use simulator::Simulator;
 use std::sync::Arc;
 use sui_sdk::SUI_COIN_TYPE;
 use sui_types::base_types::ObjectID;
 use tokio::sync::OnceCell;
-use tokio::task::JoinSet;
+// JoinSet might be removed if find_dexes is simplified
+// use tokio::task::JoinSet;
 
-// Updated imports for ProtocolAdapter and specific adapters
-use dex_indexer::protocols::{
-    ProtocolAdapter,
-    aftermath_adapter::AftermathAdapter,
-    cetus_adapter::CetusAdapter,
-    // Other adapters will be added here as they are created e.g.
-    // deepbook_v2_adapter::DeepbookV2Adapter,
-    // flowx_clmm_adapter::FlowxClmmAdapter,
-    // turbos_adapter::TurbosAdapter,
-};
-// Keep DexSearcher and Path from local `super` for now, though DexSearcher's signature changes.
-// Dex itself is removed.
-use super::{DexSearcher, Path, deepbook_v2::DeepbookV2, flowx_clmm::FlowxClmm, turbos::Turbos}; // Temporarily keep old structs for unmigrated protocols
-use crate::defi::{blue_move::BlueMove, kriya_amm::KriyaAmm, kriya_clmm::KriyaClmm}; // Temporarily keep old structs
+// Core ProtocolAdapter trait
+use dex_indexer::protocols::ProtocolAdapter;
 
+// Specific, refactored adapters
+use dex_indexer::protocols::cetus_adapter::CetusAdapter;
+use dex_indexer::protocols::aftermath_adapter::AftermathAdapter;
+use dex_indexer::protocols::blue_move::BlueMoveAdapter;
+use dex_indexer::protocols::deepbook_v2::DeepbookV2Adapter;
+use dex_indexer::protocols::flowx_clmm::FlowxCLMMAdapter;
+use dex_indexer::protocols::kriya_amm::KriyaAmmAdapter;
+use dex_indexer::protocols::navi::NaviAdapter;
+use dex_indexer::protocols::turbos::TurbosAdapter;
+use crate::defi::kriya_clmm::KriyaClmm; // This should point to the refactored KriyaClmm adapter
+
+// DexSearcher trait and Path struct from the same `defi` module (super)
+use super::{DexSearcher, Path};
+// Note: Old, unrefactored adapter structs like AftermathAdapter, DeepbookV2, FlowxClmm, Turbos, BlueMove, KriyaAmm
+// are removed from imports here. If find_dexes needs to handle them, it will be by skipping them.
+// The AftermathAdapter was imported from dex_indexer::protocols, if it's refactored and ready, it can be used.
+// For this task, focusing on Cetus and KriyaClmm.
 
 static INDEXER: OnceCell<Arc<DexIndexer>> = OnceCell::const_new();
 
@@ -52,142 +58,270 @@ impl IndexerDexSearcher {
     }
 }
 
-// Renamed to new_adapters and returns Vec<Box<dyn ProtocolAdapter>>
-async fn new_adapters(
-    simulator_box: Box<dyn Simulator>, // Changed from Arc<Box<dyn Simulator>> to Box<dyn Simulator> to match simulator_pool.get()
-    pool: &Pool,
-    token_in_type: &str,
-    token_out_type: Option<String>,
-) -> Result<Vec<Box<dyn ProtocolAdapter>>> {
-    let simulator_arc = Arc::new(simulator_box); // Adapters expect Arc<dyn Simulator>
-    let adapters: Vec<Box<dyn ProtocolAdapter>> = match pool.protocol {
-        Protocol::Turbos => {
-            // TODO: Replace with TurbosAdapter once created
-            let dex = Turbos::new(simulator_arc, pool, token_in_type).await?;
-            vec![Box::new(dex) as Box<dyn ProtocolAdapter>] // Placeholder casting
-        }
-
-        Protocol::Cetus => {
-            let adapter = CetusAdapter::new(simulator_arc, pool, token_in_type).await?;
-            vec![Box::new(adapter) as Box<dyn ProtocolAdapter>]
-        }
-
-        Protocol::Aftermath => {
-            if let Some(out_type) = token_out_type {
-                // AftermathAdapter::new expects a specific coin_out_type, not Option
-                let adapter = AftermathAdapter::new(simulator_arc, pool, token_in_type, &out_type).await?;
-                // The old Aftermath::new returned Vec<Self>, AftermathAdapter::new returns Result<Self>
-                // So, we wrap it in a vec.
-                vec![Box::new(adapter) as Box<dyn ProtocolAdapter>]
-            } else {
-                // If no specific token_out_type, AftermathAdapter cannot be created with current constructor.
-                // Original Aftermath::new could discover pairs. This functionality is lost for now.
-                // Consider logging this or modifying AftermathAdapter.
-                // For find_test_path, this means Aftermath won't be included if token_out_type is None.
-                println!("WARN: AftermathAdapter skipped for pool {} due to missing specific coin_out_type", pool.pool);
-                vec![]
-            }
-        }
-        Protocol::FlowxClmm => {
-            // TODO: Replace with FlowxClmmAdapter once created
-            let dex = FlowxClmm::new(simulator_arc, pool, token_in_type).await?;
-            vec![Box::new(dex) as Box<dyn ProtocolAdapter>] // Placeholder casting
-        }
-
-        Protocol::KriyaAmm => {
-            // TODO: Replace with KriyaAmmAdapter once created
-            let dex = KriyaAmm::new(simulator_arc, pool, token_in_type).await?;
-            vec![Box::new(dex) as Box<dyn ProtocolAdapter>] // Placeholder casting
-        }
-
-        Protocol::KriyaClmm => {
-            // TODO: Replace with KriyaClmmAdapter once created
-            let dex = KriyaClmm::new(simulator_arc, pool, token_in_type).await?;
-            vec![Box::new(dex) as Box<dyn ProtocolAdapter>] // Placeholder casting
-        }
-
-        Protocol::DeepbookV2 => {
-            // TODO: Replace with DeepbookV2Adapter once created
-            let dex = DeepbookV2::new(simulator_arc, pool, token_in_type).await?;
-            vec![Box::new(dex) as Box<dyn ProtocolAdapter>] // Placeholder casting
-        }
-
-        Protocol::BlueMove => {
-            // TODO: Replace with BlueMoveAdapter once created
-            let dex = BlueMove::new(simulator_arc, pool, token_in_type).await?;
-            vec![Box::new(dex) as Box<dyn ProtocolAdapter>] // Placeholder casting
-        }
-
-        _ => bail!("unsupported protocol for adapter conversion: {:?}", pool.protocol),
-    };
-
-    Ok(adapters)
-}
+// The new_adapters function is removed. Logic will be in find_dexes and find_test_path.
 
 #[async_trait::async_trait]
 impl DexSearcher for IndexerDexSearcher {
-    async fn find_dexes(&self, token_in_type: &str, token_out_type: Option<String>) -> Result<Vec<Box<dyn ProtocolAdapter>>> { // Return type changed
-        let pools = if let Some(token_out_type_str) = token_out_type.as_ref() {
-            self.indexer.get_pools_by_token01(token_in_type, token_out_type_str)
+    async fn find_dexes(&self, coin_in_type: &str, coin_out_type: Option<String>) -> Result<Vec<Box<dyn ProtocolAdapter>>> {
+        let pools_data = if let Some(token_out_type_str) = coin_out_type.as_ref() {
+            self.indexer.get_pools_by_token01(coin_in_type, token_out_type_str)
         } else {
-            self.indexer.get_pools_by_token(token_in_type)
+            self.indexer.get_pools_by_token(coin_in_type)
         };
-        ensure!(
-            pools.is_some(),
+
+        let pools_data = pools_data.ok_or_else(|| eyre!(
             "pools not found, coin_in: {}, coin_out: {:?}",
             token_in_type,
-            token_out_type.as_deref().unwrap_or("None")
-        );
+            coin_out_type.as_deref().unwrap_or("None")
+        ))?;
 
-        let mut join_set = JoinSet::new();
-        for pool in pools.unwrap() { // pools.unwrap() is safe due to ensure above
-            let simulator = self.simulator_pool.get(); // This is Box<dyn Simulator>
-            let token_in_type_owned = token_in_type.to_string();
-            let token_out_type_owned = token_out_type.clone();
-            // Call renamed new_adapters
-            join_set.spawn(async move { new_adapters(simulator, &pool, &token_in_type_owned, token_out_type_owned).await });
-        }
+        let mut adapters: Vec<Box<dyn ProtocolAdapter>> = Vec::new();
 
-        let mut res = Vec::new();
-        while let Some(Ok(result)) = join_set.join_next().await {
-            match result {
-                Ok(adapters) => res.extend(adapters), // Changed dexes to adapters
-                Err(_error) => {
-                    // Optionally log error, e.g., tracing::debug!(?error, "Failed to create adapter for a pool");
+        for pool_data in pools_data {
+            // simulator_pool.get() returns a Box<dyn Simulator>. Adapters need Arc<dyn Simulator>.
+            // Arc::new() will move the Box into an Arc.
+            let simulator = Arc::new(self.simulator_pool.get());
+            let coin_in_type_for_pool = coin_in_type; // Already a &str
+
+            let adapter_result = match pool_data.protocol {
+                Protocol::Cetus => {
+                    CetusAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("CetusAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::KriyaClmm => {
+                    KriyaClmm::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("KriyaClmm adapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::Aftermath => {
+                    // AftermathAdapter requires a specific coin_out_type.
+                    // We use the coin_out_type parameter of find_dexes.
+                    // If it's None, we cannot create this adapter.
+                    if let Some(ref out_type_str) = coin_out_type {
+                        AftermathAdapter::new(simulator, &pool_data, coin_in_type_for_pool, out_type_str)
+                            .await
+                            .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                            .map_err(|e| eyre!("AftermathAdapter error for pool {}: {}", pool_data.pool, e))
+                    } else {
+                        // If no specific coin_out_type is requested for the search, skip Aftermath.
+                        // Alternatively, one could try to infer or iterate all possible pairs from the pool,
+                        // but current AftermathAdapter isn't designed for that.
+                        // tracing::debug!("Skipping Aftermath pool {} as no specific coin_out_type was provided for search", pool_data.pool);
+                        continue; // Special handling: skip if coin_out_type is None
+                    }
+                }
+                Protocol::BlueMove => {
+                    BlueMoveAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("BlueMoveAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::DeepBookV2 => { // Enum variant is DeepBookV2
+                    DeepbookV2Adapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("DeepbookV2Adapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::FlowxClmm => { // Enum variant is FlowxClmm
+                    FlowxCLMMAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("FlowxCLMMAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::KriyaAmm => {
+                    KriyaAmmAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("KriyaAmmAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::Navi => {
+                    NaviAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("NaviAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::TurbosFinance => { // Enum variant is TurbosFinance
+                    TurbosAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("TurbosAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                unsupported_protocol => {
+                    // tracing::warn!("Skipping unsupported protocol {:?} for pool {}", unsupported_protocol, pool_data.pool);
+                    continue; // Skip this pool if protocol is not supported
+                }
+            };
+
+            match adapter_result {
+                Ok(adapter_instance) => {
+                    // Additional check: if coin_out_type is specified, ensure adapter matches
+                    if let Some(expected_out_type) = &coin_out_type {
+                        if adapter_instance.coin_out_type() == *expected_out_type {
+                            adapters.push(adapter_instance);
+                        } else {
+                            // This can happen if a pool supports multiple pairs with the same coin_in_type
+                            // but the instantiated adapter resolved to a different coin_out_type.
+                            // Or if coin_in_type was coin1 of the pool, and coin_out_type became coin0.
+                            // We might need to call flip() here if the adapter's initial state
+                            // does not match the desired coin_in_type -> coin_out_type direction.
+                            // For now, simply filter.
+                            // tracing::debug!("Adapter for pool {} resolved to {} -> {} but expected {} -> {}",
+                            //    pool_data.pool, adapter_instance.coin_in_type(), adapter_instance.coin_out_type(),
+                            //    coin_in_type, expected_out_type);
+                        }
+                    } else {
+                        // If no coin_out_type specified, add any valid adapter for coin_in_type
+                        adapters.push(adapter_instance);
+                    }
+                }
+                Err(e) => {
+                    // tracing::debug!("Failed to create adapter for pool {}: {}", pool_data.pool, e);
+                    // Optionally log error, but continue processing other pools.
                 }
             }
         }
-
-        Ok(res)
+        Ok(adapters)
     }
 
-    async fn find_test_path(&self, path_obj_ids: &[ObjectID]) -> Result<Path> { // Renamed path to path_obj_ids for clarity
-        let mut adapters_for_path = vec![]; // Changed dexes to adapters_for_path
-        let mut current_coin_in = SUI_COIN_TYPE.to_string();
+    async fn find_test_path(&self, path_object_ids: &[ObjectID]) -> Result<Path> {
+        let mut adapters_for_path: Vec<Box<dyn ProtocolAdapter>> = Vec::new();
 
-        for pool_id in path_obj_ids {
-            let simulator = self.simulator_pool.get(); // Box<dyn Simulator>
-            let pool = self.indexer.get_pool_by_id(pool_id).ok_or_eyre(format!("Pool {} not found in find_test_path", pool_id))?;
+        for (index, object_id) in path_object_ids.iter().enumerate() {
+            let pool_info = self
+                .indexer
+                .get_pool_by_id(object_id) // Assuming get_pool_by_id returns Option<Pool>
+                .ok_or_else(|| eyre!("Pool {} not found in find_test_path", object_id))?;
 
-            // new_adapters expects Option<String> for token_out_type. For finding a path sequentially,
-            // we don't pre-specify token_out_type for each step, it's determined by the pool's pairs.
-            // However, AftermathAdapter::new now requires a specific token_out_type.
-            // If the pool is Aftermath and token_out_type is None, new_adapters will return an empty vec or error for it.
-            // We need one adapter from new_adapters. If it finds multiple (e.g. old Aftermath), we'd need to pick one.
-            // Assuming new_adapters will provide the correct single adapter or handle pair discovery if token_out_type is None.
-            // For now, passing None and hoping the adapter's `new` or `new_adapters` logic can handle it or we pick first.
-            let mut found_adapters = new_adapters(simulator, &pool, &current_coin_in, None).await?;
+            let simulator = Arc::new(self.simulator_pool.get());
 
-            ensure!(!found_adapters.is_empty(), "No adapter found for pool {} with coin_in {}", pool_id, current_coin_in);
-            // If multiple adapters were returned for a single pool (e.g. if an adapter could handle multiple pairs from one pool object),
-            // we'd need a strategy here. For now, assume the first one is suitable or the one that matches current_coin_in.
-            // The current adapter structure (one instance per specific pair for Aftermath, or per pool for Cetus) simplifies this.
-            let adapter = found_adapters.remove(0); // Take the first (and likely only) adapter
+            let current_coin_in_type_str: String;
+            let current_coin_in_type: &str;
 
-            current_coin_in = adapter.coin_out_type();
-            adapters_for_path.push(adapter);
+            if adapters_for_path.is_empty() {
+                // For the first dex in path, we need to determine its input coin.
+                // The problem is, a pool (ObjectID) can be TokenA/TokenB.
+                // If path is A->B->C, first pool is A/B. We need to know if A is token0 or token1.
+                // This requires either the caller to specify the initial coin_in_type for the path,
+                // or we make an assumption. The previous logic used SUI_COIN_TYPE.
+                // The new prompt implies using pool_info.token0_type() as a default for the very first step.
+                // This might not be correct if the path doesn't start with token0_type.
+                // A robust find_test_path might need an initial coin_in_type parameter.
+                // For now, following the prompt's simplified logic:
+                current_coin_in_type_str = pool_info.token0_type().to_string();
+                current_coin_in_type = &current_coin_in_type_str;
+                // A better default might be to try instantiating with token0, and if that doesn't align (e.g. if adapter flips), adjust.
+                // Or, the test path provider should ensure the sequence of ObjectIDs implies a valid coin flow.
+            } else {
+                current_coin_in_type_str = adapters_for_path.last().unwrap().coin_out_type();
+                current_coin_in_type = &current_coin_in_type_str;
+            }
+
+            let adapter_result = match pool_info.protocol {
+                Protocol::Cetus => {
+                    CetusAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("CetusAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::KriyaClmm => {
+                    KriyaClmm::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("KriyaClmm adapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::Aftermath => {
+                    // Determine coin_out_type for Aftermath based on current_coin_in_type and pool's tokens
+                    let coin_out_for_aftermath = if pool_info.token0_type() == current_coin_in_type {
+                        pool_info.token1_type()
+                    } else if pool_info.token1_type() == current_coin_in_type {
+                        pool_info.token0_type()
+                    } else {
+                        return Err(eyre!(
+                            "Logic error: current_coin_in_type {} not found in Aftermath pool {} ({}, {}) for test path",
+                            current_coin_in_type,
+                            pool_info.pool,
+                            pool_info.token0_type(),
+                            pool_info.token1_type()
+                        ));
+                    };
+                    AftermathAdapter::new(simulator, &pool_info, current_coin_in_type, coin_out_for_aftermath)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("AftermathAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::BlueMove => {
+                    BlueMoveAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("BlueMoveAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::DeepBookV2 => {
+                    DeepbookV2Adapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("DeepbookV2Adapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::FlowxClmm => {
+                    FlowxCLMMAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("FlowxCLMMAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::KriyaAmm => {
+                    KriyaAmmAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("KriyaAmmAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::Navi => {
+                    NaviAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("NaviAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::TurbosFinance => {
+                    TurbosAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("TurbosAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                unsupported_protocol => {
+                    return Err(eyre!(
+                        "Unsupported protocol {:?} for object_id {} in test path",
+                        unsupported_protocol,
+                        object_id
+                    ));
+                }
+            };
+
+            match adapter_result {
+                Ok(mut adapter_instance) => {
+                    // Ensure the adapter's coin_in_type matches current_coin_in_type.
+                    // Some adapters might initialize to a default pair orientation.
+                    if adapter_instance.coin_in_type() != current_coin_in_type {
+                        // This implies the adapter might have flipped, or was initialized with the other pair.
+                        // e.g. KriyaClmm::new might try to set coin_in_type. If it doesn't match, it might flip itself,
+                        // or we might need to flip it.
+                        // For now, assume new() correctly sets the direction if coin_in_type is provided.
+                        // If not, this is a point of potential error.
+                        // A check could be:
+                        if adapter_instance.coin_out_type() == current_coin_in_type { // It's flipped
+                            adapter_instance.flip();
+                        }
+                        // After potential flip, re-check
+                        if adapter_instance.coin_in_type() != current_coin_in_type {
+                            return Err(eyre!("Adapter for pool {} initialized with {} as input, but expected {}",
+                                pool_info.pool, adapter_instance.coin_in_type(), current_coin_in_type));
+                        }
+                    }
+                    adapters_for_path.push(adapter_instance);
+                }
+                Err(e) => return Err(e), // Fail the whole function if any adapter in the test path fails
+            }
         }
-
-        Ok(Path { path: adapters_for_path }) // Path struct now takes Vec<Box<dyn ProtocolAdapter>>
+        Ok(Path::new(adapters_for_path))
     }
 }
