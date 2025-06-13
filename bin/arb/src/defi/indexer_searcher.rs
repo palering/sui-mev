@@ -23,6 +23,8 @@ use dex_indexer::protocols::deepbook_v2::DeepbookV2Adapter;
 use dex_indexer::protocols::flowx_clmm::FlowxCLMMAdapter;
 use dex_indexer::protocols::kriya_amm::KriyaAmmAdapter;
 use dex_indexer::protocols::navi::NaviAdapter;
+use dex_indexer::protocols::scallop_adapter::ScallopAdapter;
+use dex_indexer::protocols::haedal_adapter::HaedalAdapter; // Added HaedalAdapter
 use dex_indexer::protocols::turbos::TurbosAdapter;
 use crate::defi::kriya_clmm::KriyaClmm; // This should point to the refactored KriyaClmm adapter
 
@@ -148,6 +150,18 @@ impl DexSearcher for IndexerDexSearcher {
                         .await
                         .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
                         .map_err(|e| eyre!("TurbosAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::Scallop => {
+                    ScallopAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("ScallopAdapter error for pool {}: {}", pool_data.pool, e))
+                }
+                Protocol::Haedal => {
+                    HaedalAdapter::new(simulator, &pool_data, coin_in_type_for_pool)
+                        .await
+                        .map(|adapter| Box::new(adapter) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("HaedalAdapter error for pool {}: {}", pool_data.pool, e))
                 }
                 unsupported_protocol => {
                     // tracing::warn!("Skipping unsupported protocol {:?} for pool {}", unsupported_protocol, pool_data.pool);
@@ -287,6 +301,18 @@ impl DexSearcher for IndexerDexSearcher {
                         .await
                         .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
                         .map_err(|e| eyre!("TurbosAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::Scallop => {
+                    ScallopAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("ScallopAdapter failed for test path pool {}: {}", pool_info.pool, e))
+                }
+                Protocol::Haedal => {
+                    HaedalAdapter::new(simulator, &pool_info, current_coin_in_type)
+                        .await
+                        .map(|a| Box::new(a) as Box<dyn ProtocolAdapter>)
+                        .map_err(|e| eyre!("HaedalAdapter failed for test path pool {}: {}", pool_info.pool, e))
                 }
                 unsupported_protocol => {
                     return Err(eyre!(

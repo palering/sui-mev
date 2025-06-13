@@ -265,6 +265,8 @@ pub enum Protocol {
     Abex,
     BabySwap,
     Navi,
+    Scallop,
+    Haedal, // Added Haedal
 }
 
 impl fmt::Display for Protocol {
@@ -286,6 +288,8 @@ impl fmt::Display for Protocol {
             Protocol::Abex => write!(f, "abex"),
             Protocol::BabySwap => write!(f, "babyswap"),
             Protocol::Navi => write!(f, "navi"),
+            Protocol::Scallop => write!(f, "scallop"),
+            Protocol::Haedal => write!(f, "haedal"), // Added Haedal
         }
     }
 }
@@ -311,6 +315,8 @@ impl TryFrom<&str> for Protocol {
             "abex" => Ok(Protocol::Abex),
             "babyswap" => Ok(Protocol::BabySwap),
             "navi" => Ok(Protocol::Navi),
+            "scallop" => Ok(Protocol::Scallop),
+            "haedal" => Ok(Protocol::Haedal), // Added Haedal
             _ => bail!("Unsupported protocol: {}", value),
         }
     }

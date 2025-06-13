@@ -1,6 +1,8 @@
 pub mod aftermath_adapter;
 pub mod cetus_adapter;
-pub mod common_trade_types; // Added new module
+pub mod haedal_adapter; // Newly added
+pub mod scallop_adapter;
+pub mod common_trade_types;
 pub mod utils;
 
 use std::{collections::HashSet, sync::Arc};
