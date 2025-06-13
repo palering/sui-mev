@@ -1,6 +1,6 @@
-mod aftermath;
+// mod aftermath; // Removed
 mod blue_move;
-mod cetus;
+// mod cetus; // Removed
 mod deepbook_v2;
 mod flowx_clmm;
 mod indexer_searcher;
@@ -32,8 +32,11 @@ use sui_types::{
 };
 use tokio::task::JoinSet;
 use tracing::Instrument;
-use trade::{FlashResult, TradeResult};
-pub use trade::{Path, TradeCtx, TradeType, Trader};
+// FlashResult and TradeCtx are now directly imported if needed, not via trade module for these specific types
+use dex_indexer::protocols::{ProtocolAdapter, CloneBoxedProtocolAdapter, TradeCtx, FlashResult}; // Added imports
+
+// Path, TradeType, Trader, TradeResult are still from local trade module
+pub use trade::{Path, TradeType, Trader, TradeResult};
 
 use crate::{config::pegged_coin_types, types::Source};
 
@@ -46,91 +49,32 @@ pub const CETUS_AGGREGATOR: &str = "0x11451575c775a3e633437b827ecbc1eb51a5964b03
 #[async_trait::async_trait]
 pub trait DexSearcher: Send + Sync {
     // coin_type: e.g. "0x2::sui::SUI"
-    async fn find_dexes(&self, coin_in_type: &str, coin_out_type: Option<String>) -> Result<Vec<Box<dyn Dex>>>;
+    async fn find_dexes(&self, coin_in_type: &str, coin_out_type: Option<String>) -> Result<Vec<Box<dyn ProtocolAdapter>>>; // Changed Dex to ProtocolAdapter
 
     async fn find_test_path(&self, path: &[ObjectID]) -> Result<Path>;
 }
 
-#[async_trait::async_trait]
-pub trait Dex: Send + Sync + CloneBoxedDex {
-    fn support_flashloan(&self) -> bool {
-        false
-    }
+// Dex trait removed
+// CloneBoxedDex trait removed
+// Implementations for Clone, PartialEq, Eq, Hash, Debug for Box<dyn Dex> removed
+// Instead, these would be for Box<dyn ProtocolAdapter> if needed,
+// but they are typically defined in the crate where ProtocolAdapter is defined if they are generic.
+// For now, assuming these specific impls (PartialEq, Eq, Hash, Debug for the Boxed trait object) might not be immediately needed
+// or would be defined elsewhere if required for collections.
+// The ProtocolAdapter itself in dex_indexer::protocols might need to ensure its objects are comparable/hashable if stored in HashSets/HashMaps.
+// Let's remove these impls for now as they were specific to Box<dyn Dex>.
+// If Path requires Box<dyn ProtocolAdapter> to be Eq or Hash, we might need to add those for ProtocolAdapter.
+// The Path struct in trade.rs does not seem to require Hash or Eq for Box<dyn ProtocolAdapter> for its current methods.
+// The `all_hops` HashMap in `find_sell_paths` uses String as key and Vec<Box<dyn ProtocolAdapter>> as value, so no direct Hash/Eq on Box<dyn ProtocolAdapter> needed there.
+// The `visited_dexes` HashSet in `find_sell_paths` stores ObjectID, not Box<dyn ProtocolAdapter>.
 
-    /// Extend the trade_tx with a flashloan tx.
-    /// Returns (coin_out, receipt).
-    async fn extend_flashloan_tx(&self, _ctx: &mut TradeCtx, _amount: u64) -> Result<FlashResult> {
-        bail!("flashloan not supported")
-    }
-
-    /// Extend the trade_tx with a repay tx.
-    /// Returns the coin_profit after repaying the flashloan.
-    async fn extend_repay_tx(&self, _ctx: &mut TradeCtx, _coin: Argument, _flash_res: FlashResult) -> Result<Argument> {
-        bail!("flashloan not supported")
-    }
-
-    /// Extend the trade_tx with a swap tx.
-    /// Returns coin_out for the next swap.
-    async fn extend_trade_tx(
-        &self,
-        ctx: &mut TradeCtx,
-        sender: SuiAddress,
-        coin_in: Argument,
-        amount_in: Option<u64>,
-    ) -> Result<Argument>;
-
-    fn coin_in_type(&self) -> String;
-    fn coin_out_type(&self) -> String;
-    fn protocol(&self) -> Protocol;
-    fn liquidity(&self) -> u128;
-    fn object_id(&self) -> ObjectID;
-
-    /// flip the coin_in_type and coin_out_type
-    fn flip(&mut self);
-
-    // for debug
-    fn is_a2b(&self) -> bool;
-    async fn swap_tx(&self, sender: SuiAddress, recipient: SuiAddress, amount_in: u64) -> Result<TransactionData>;
-}
-
-pub trait CloneBoxedDex {
-    fn clone_boxed(&self) -> Box<dyn Dex>;
-}
-
-impl<T> CloneBoxedDex for T
-where
-    T: 'static + Dex + Clone,
-{
-    fn clone_boxed(&self) -> Box<dyn Dex> {
-        Box::new(self.clone())
-    }
-}
-
-impl Clone for Box<dyn Dex> {
-    fn clone(&self) -> Box<dyn Dex> {
-        self.clone_boxed()
-    }
-}
-
-impl PartialEq for Box<dyn Dex> {
-    fn eq(&self, other: &Self) -> bool {
-        self.object_id() == other.object_id()
-    }
-}
-
-impl Eq for Box<dyn Dex> {}
-
-impl Hash for Box<dyn Dex> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.object_id().hash(state);
-    }
-}
-
-impl fmt::Debug for Box<dyn Dex> {
+// For fmt::Debug on Box<dyn ProtocolAdapter>, it would look like:
+impl fmt::Debug for Box<dyn ProtocolAdapter> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Assuming ProtocolAdapter has these methods (it does, from Dex)
         write!(
             f,
-            "{}({}, {}, {})",
+            "ProtocolAdapter({:?}, {}, {}, {})", // Added a marker for clarity
             self.protocol(),
             self.object_id(),
             self.coin_in_type(),
@@ -157,7 +101,7 @@ impl Defi {
     }
 
     #[allow(dead_code)]
-    pub async fn find_dexes(&self, coin_in_type: &str, coin_out_type: Option<String>) -> Result<Vec<Box<dyn Dex>>> {
+    pub async fn find_dexes(&self, coin_in_type: &str, coin_out_type: Option<String>) -> Result<Vec<Box<dyn ProtocolAdapter>>> { // Changed Dex to ProtocolAdapter
         self.dex_searcher.find_dexes(coin_in_type, coin_out_type).await
     }
 
@@ -313,9 +257,9 @@ impl Defi {
 
 fn dfs(
     coin_type: &str,
-    path: &mut Vec<Box<dyn Dex>>,
-    hops: &HashMap<String, Vec<Box<dyn Dex>>>,
-    routes: &mut Vec<Vec<Box<dyn Dex>>>,
+    path: &mut Vec<Box<dyn ProtocolAdapter>>, // Changed Dex to ProtocolAdapter
+    hops: &HashMap<String, Vec<Box<dyn ProtocolAdapter>>>, // Changed Dex to ProtocolAdapter
+    routes: &mut Vec<Vec<Box<dyn ProtocolAdapter>>>, // Changed Dex to ProtocolAdapter
 ) {
     if coin::is_native_coin(coin_type) {
         routes.push(path.clone());
