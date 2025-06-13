@@ -21,7 +21,10 @@ use sui_types::{
 };
 use tracing::instrument;
 
-use super::{navi::Navi, shio::Shio, Dex};
+// Import moved types from dex_indexer
+use dex_indexer::protocols::{FlashResult, TradeCtx, ProtocolAdapter, CloneBoxedProtocolAdapter}; // Added ProtocolAdapter, CloneBoxedProtocolAdapter
+
+use super::{navi::Navi, shio::Shio}; // Dex removed, ProtocolAdapter will be used.
 use crate::{config::*, types::Source};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,12 +33,7 @@ pub enum TradeType {
     Flashloan,
 }
 
-#[derive(Debug, Clone)]
-pub struct FlashResult {
-    pub coin_out: Argument,
-    pub receipt: Argument,
-    pub pool: Option<Argument>,
-}
+// FlashResult is now imported
 
 #[derive(Clone)]
 pub struct Trader {
@@ -44,11 +42,7 @@ pub struct Trader {
     navi: Arc<Navi>,
 }
 
-#[derive(Default)]
-pub struct TradeCtx {
-    pub ptb: ProgrammableTransactionBuilder,
-    pub command_count: u16,
-}
+// TradeCtx is now imported
 
 #[derive(Default, Debug, Clone)]
 pub struct TradeResult {
@@ -72,10 +66,10 @@ impl Trader {
 
     #[instrument(name = "result", skip_all, fields(
         len = %format!("{:<2}", path.path.len()),
-        paths = %path.path.iter().map(|d| {
+        paths = %path.path.iter().map(|d| { // This d will be Box<dyn ProtocolAdapter> soon
             let coin_in = d.coin_in_type().split("::").last().unwrap().to_string();
             let coin_out = d.coin_out_type().split("::").last().unwrap().to_string();
-            format!("{:?}:{}:{}", d.protocol(), coin_in, coin_out)
+            format!("{:?}:{}:{}", d.protocol(), coin_in, coin_out) // protocol() is on ProtocolAdapter
         }).collect::<Vec<_>>().join(" ")
     ))]
     pub async fn get_trade_result(
@@ -200,20 +194,23 @@ impl Trader {
 
         // 2. swap
         let mut coin_in_arg = flash_res.coin_out;
-        let dex_iter: Box<dyn Iterator<Item = &Box<dyn Dex>> + Send> = if first_dex.support_flashloan() {
+        let dex_iter: Box<dyn Iterator<Item = &Box<dyn ProtocolAdapter>> + Send> = if first_dex.support_flashloan() { // ProtocolAdapter has support_flashloan
             Box::new(path.path.iter().skip(1))
         } else {
             Box::new(path.path.iter())
         };
         for (i, dex) in dex_iter.enumerate() {
             let amount_in = if i == 0 { Some(amount_in) } else { None };
-            coin_in_arg = dex.extend_trade_tx(&mut ctx, sender, coin_in_arg, amount_in).await?;
+            coin_in_arg = dex.extend_trade_tx(&mut ctx, sender, coin_in_arg, amount_in).await?; // ProtocolAdapter has extend_trade_tx
         }
 
         // 3. repay flashloan
-        let coin_profit = if first_dex.support_flashloan() {
-            first_dex.extend_repay_tx(&mut ctx, coin_in_arg, flash_res).await?
+        let coin_profit = if first_dex.support_flashloan() { // ProtocolAdapter has support_flashloan
+            first_dex.extend_repay_tx(&mut ctx, coin_in_arg, flash_res).await? // ProtocolAdapter has extend_repay_tx
         } else {
+            // Assuming self.navi.extend_repay_tx is compatible or Navi becomes an adapter.
+            // For now, this part remains, but Navi might need to conform to ProtocolAdapter if used in paths.
+            // If Navi is not part of the path, this is fine.
             self.navi.extend_repay_tx(&mut ctx, coin_in_arg, flash_res)?
         };
 
@@ -247,117 +244,9 @@ impl Trader {
     }
 }
 
-impl TradeCtx {
-    pub fn new() -> Self {
-        Self::default()
-    }
+// TradeCtx struct and impl block removed, now imported.
+// Deref and DerefMut for TradeCtx were part of its impl block, so they are also effectively removed from here.
 
-    pub fn command(&mut self, cmd: Command) {
-        self.ptb.command(cmd);
-        self.command_count += 1;
-    }
-
-    pub fn transfer_arg(&mut self, recipient: SuiAddress, coin_arg: Argument) {
-        self.ptb.transfer_arg(recipient, coin_arg);
-        self.command_count += 1;
-    }
-
-    pub fn last_command_idx(&self) -> u16 {
-        self.command_count - 1
-    }
-
-    pub fn split_coin(&mut self, coin: ObjectRef, amount: u64) -> Result<Argument> {
-        let coin_arg = self.obj(ObjectArg::ImmOrOwnedObject(coin)).map_err(|e| eyre!(e))?;
-        let amount_arg = self.pure(amount).map_err(|e| eyre!(e))?;
-
-        Ok(self.split_coin_arg(coin_arg, amount_arg))
-    }
-
-    pub fn split_coin_arg(&mut self, coin: Argument, amount: Argument) -> Argument {
-        self.command(Command::SplitCoins(coin, vec![amount]));
-        let last_idx = self.last_command_idx();
-        Argument::Result(last_idx)
-    }
-
-    // sui::balance::destroy_zero(balance);
-    pub fn balance_destroy_zero(&mut self, balance: Argument, coin_type: TypeTag) -> Result<()> {
-        self.build_command(
-            SUI_FRAMEWORK_PACKAGE_ID,
-            "balance",
-            "destroy_zero",
-            vec![coin_type],
-            vec![balance],
-        )?;
-
-        Ok(())
-    }
-
-    // sui::balance::zero<CoinTypeTag>();
-    pub fn balance_zero(&mut self, coin_type: TypeTag) -> Result<Argument> {
-        self.build_command(SUI_FRAMEWORK_PACKAGE_ID, "balance", "zero", vec![coin_type], vec![])?;
-
-        let last_idx = self.last_command_idx();
-        Ok(Argument::Result(last_idx))
-    }
-
-    // sui::coin::from_balance(balance, ctx)
-    pub fn coin_from_balance(&mut self, balance: Argument, coin_type: TypeTag) -> Result<Argument> {
-        self.build_command(
-            SUI_FRAMEWORK_PACKAGE_ID,
-            "coin",
-            "from_balance",
-            vec![coin_type],
-            vec![balance],
-        )?;
-
-        let last_idx = self.last_command_idx();
-        Ok(Argument::Result(last_idx))
-    }
-
-    // sui::coin::into_balance(coin);
-    pub fn coin_into_balance(&mut self, coin: Argument, coin_type: TypeTag) -> Result<Argument> {
-        self.build_command(
-            SUI_FRAMEWORK_PACKAGE_ID,
-            "coin",
-            "into_balance",
-            vec![coin_type],
-            vec![coin],
-        )?;
-
-        let last_idx = self.last_command_idx();
-        Ok(Argument::Result(last_idx))
-    }
-
-    #[inline]
-    fn build_command(
-        &mut self,
-        package: ObjectID,
-        module: &str,
-        function: &str,
-        type_arguments: Vec<TypeTag>,
-        arguments: Vec<Argument>,
-    ) -> Result<()> {
-        let module = Identifier::new(module).map_err(|e| eyre!(e))?;
-        let function = Identifier::new(function).map_err(|e| eyre!(e))?;
-        self.command(Command::move_call(package, module, function, type_arguments, arguments));
-
-        Ok(())
-    }
-}
-
-impl Deref for TradeCtx {
-    type Target = ProgrammableTransactionBuilder;
-
-    fn deref(&self) -> &Self::Target {
-        &self.ptb
-    }
-}
-
-impl DerefMut for TradeCtx {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.ptb
-    }
-}
 
 impl PartialEq for TradeResult {
     fn eq(&self, other: &Self) -> bool {
@@ -373,11 +262,11 @@ impl PartialOrd for TradeResult {
 
 #[derive(Default, Clone)]
 pub struct Path {
-    pub path: Vec<Box<dyn Dex>>,
+    pub path: Vec<Box<dyn ProtocolAdapter>>,
 }
 
 impl Path {
-    pub fn new(path: Vec<Box<dyn Dex>>) -> Self {
+    pub fn new(path: Vec<Box<dyn ProtocolAdapter>>) -> Self {
         Self { path }
     }
 
