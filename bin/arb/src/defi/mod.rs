@@ -1,27 +1,28 @@
 // mod aftermath; // Removed
-mod blue_move;
-// mod cetus; // Removed
-mod deepbook_v2;
-mod flowx_clmm;
+// mod blue_move; // Not yet refactored
+// mod cetus; // Removed, will be replaced by CetusAdapter from dex_indexer
+// mod deepbook_v2; // Not yet refactored
+// mod flowx_clmm; // Not yet refactored
 mod indexer_searcher;
-mod kriya_amm;
-mod kriya_clmm;
-mod navi;
-mod shio;
+// mod kriya_amm; // Not yet refactored
+mod kriya_clmm; // Refactored
+// mod navi; // Not yet refactored
+mod shio; // Shio is not a ProtocolAdapter, should be active
 mod trade;
-mod turbos;
+// mod turbos; // Not yet refactored
 mod utils;
 
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    hash::Hash,
+    // hash::Hash, // Removed as likely unused for ProtocolAdapter here
     sync::Arc,
 };
 
 use ::utils::coin;
+use dex_indexer::protocols::cetus_adapter::CetusAdapter; // Added import
 use dex_indexer::types::Protocol;
-use eyre::{bail, ensure, Result};
+use eyre::{ensure, Result}; // Removed bail
 pub use indexer_searcher::IndexerDexSearcher;
 use object_pool::ObjectPool;
 use simulator::{SimulateCtx, Simulator};
@@ -33,9 +34,10 @@ use sui_types::{
 use tokio::task::JoinSet;
 use tracing::Instrument;
 // FlashResult and TradeCtx are now directly imported if needed, not via trade module for these specific types
-use dex_indexer::protocols::{ProtocolAdapter, CloneBoxedProtocolAdapter, TradeCtx, FlashResult}; // Added imports
+use dex_indexer::protocols::{ProtocolAdapter, CloneBoxedProtocolAdapter, TradeCtx, FlashResult};
 
 // Path, TradeType, Trader, TradeResult are still from local trade module
+use crate::defi::kriya_clmm::KriyaClmm; // Added KriyaClmm import
 pub use trade::{Path, TradeType, Trader, TradeResult};
 
 use crate::{config::pegged_coin_types, types::Source};
@@ -71,10 +73,10 @@ pub trait DexSearcher: Send + Sync {
 // For fmt::Debug on Box<dyn ProtocolAdapter>, it would look like:
 impl fmt::Debug for Box<dyn ProtocolAdapter> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Assuming ProtocolAdapter has these methods (it does, from Dex)
+        // Using methods guaranteed by ProtocolAdapter
         write!(
             f,
-            "ProtocolAdapter({:?}, {}, {}, {})", // Added a marker for clarity
+            "ProtocolAdapter {{ protocol: {:?}, object_id: {}, coin_in: {}, coin_out: {} }}",
             self.protocol(),
             self.object_id(),
             self.coin_in_type(),
